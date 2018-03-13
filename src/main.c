@@ -55,6 +55,26 @@ struct pwm_dev *pwm;
 /* Max value for PWM */
 uint16_t max_val;
 
+/* PWM task setting */
+#define PWM_TASK_PRIO    5
+#define PWM_STACK_SIZE    (OS_STACK_ALIGN(336))
+struct os_eventq pwm_evq;
+struct os_task pwm_task;
+os_stack_t pwm_stack[PWM_STACK_SIZE];
+
+static void pwm_task_handler(void *unused) {
+  uint16_t div = 1;
+  while (1) {
+      /* Wait 1/10 seconds */
+      os_time_delay(OS_TICKS_PER_SEC/20);
+      /* div will cycle by powers of 2 between 1 and 2^15 */
+      div = div * 2;
+      div = NOT_ZERO(div);
+      /* Re-enable duty cycle */
+      pwm_enable_duty_cycle(pwm, 0, max_val);
+  }
+}
+
 /**
  * Logs information about a connection to the console.
  */
@@ -304,6 +324,14 @@ main(void)
     /* Set initial BLE device address. */
     memcpy(g_dev_addr, (uint8_t[6]){0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a}, 6);
 
+    /* Set up channel config  for blink pin */
+    struct pwm_chan_cfg chan_conf = {
+        .pin = 12,
+        .inverted = false,
+        .data = NULL
+    };
+    uint32_t base_freq;
+
     /* Initialize OS */
     sysinit();
 #if BLE_ON
@@ -328,22 +356,14 @@ main(void)
 
     conf_load();
 #endif
-    /* PWM */
-    /* Set up channel config  for blink pin */
-    struct pwm_chan_cfg chan_conf = {
-        .pin = 22,
-        .inverted = false,
-        .data = NULL
-    };
-    uint32_t base_freq;
 
     /* Create PWM device */
     os_dev_create(&dev,
-                  "pwm0",
-                  OS_DEV_INIT_KERNEL,
-                  OS_DEV_INIT_PRIO_DEFAULT,
-                  nrf52_pwm_dev_init,
-                  NULL);
+      "pwm0",
+      OS_DEV_INIT_KERNEL,
+      OS_DEV_INIT_PRIO_DEFAULT,
+      nrf52_pwm_dev_init,
+      NULL);
     pwm = (struct pwm_dev *) os_dev_open("pwm0", 0, NULL);
 
     /* Set the PWM frequency */
@@ -351,25 +371,20 @@ main(void)
     base_freq = pwm_get_clock_freq(pwm);
     max_val = (uint16_t) (base_freq / 10000);
 
+    os_eventq_init(&pwm_evq);
+    os_task_init(&pwm_task, "pwm led", pwm_task_handler,
+            NULL, PWM_TASK_PRIO, OS_WAIT_FOREVER,
+            pwm_stack, PWM_STACK_SIZE);
+
     /* Configure a PWM channel */
     pwm_chan_config(pwm, 0, &chan_conf);
     pwm_enable_duty_cycle(pwm, 0, max_val);
-
-    uint16_t div = 1;
 
     /*
      * As the last thing, process events from default event queue.
      */
     while (1) {
-      /* Wait 1/10 seconds */
-      os_time_delay(OS_TICKS_PER_SEC/20);
-      /* div will cycle by powers of 2 between 1 and 2^15 */
-      div = div * 2;
-      div = NOT_ZERO(div);
-      /* Re-enable duty cycle */
-      pwm_enable_duty_cycle(pwm, 0, max_val / div);
-      // default queue
-      //os_eventq_run(os_eventq_dflt_get());
+      os_eventq_run(os_eventq_dflt_get());
     }
     return 0;
 }
